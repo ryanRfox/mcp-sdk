@@ -1,0 +1,36 @@
+# macOS system files
+.DS_Store
+
+# Claude session files
+.claude/
+
+# Documentation directories
+docs/
+plans/
+specs/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+
+# TypeScript
+dist/
+*.tsbuildinfo
+
+# Testing
+coverage/
+.nyc_output/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

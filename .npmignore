@@ -1,0 +1,17 @@
+# Development files
+__tests__/
+coverage/
+.env*
+.github/
+docs/
+examples/
+
+# Config files not needed in package
+tsconfig.json
+vitest.config.ts
+biome.json
+.gitignore
+pnpm-lock.yaml
+
+# Source files (we ship dist only)
+src/

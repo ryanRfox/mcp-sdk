@@ -1,0 +1,67 @@
+{
+  "name": "@radiustechsystems/mcp-sdk",
+  "version": "1.0.0",
+  "description": "Token-gate your MCP tools with ERC-1155 tokens on the Radius Network",
+  "type": "module",
+  "keywords": [
+    "radius",
+    "mcp",
+    "model-context-protocol",
+    "web3",
+    "authentication",
+    "authorization"
+  ],
+  "homepage": "https://github.com/radiustechsystems/mcp-sdk",
+  "bugs": {
+    "url": "https://github.com/radiustechsystems/mcp-sdk/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/radiustechsystems/mcp-sdk.git"
+  },
+  "license": "MIT",
+  "author": "Radius Technology Systems, Inc.",
+  "main": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run clean && tsc",
+    "clean": "rimraf dist",
+    "dev": "tsc -w",
+    "test": "vitest",
+    "test:watch": "vitest --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "biome format --write .",
+    "check": "biome check --write .",
+    "check:ci": "biome ci .",
+    "prepublishOnly": "npm run build && npm test",
+    "publish:alpha": "npm publish --tag alpha",
+    "publish:latest": "npm publish"
+  },
+  "dependencies": {
+    "@evmauth/eip712-authn": "^0.3.0",
+    "viem": "^2.31.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.1.1",
+    "@types/node": "^20.19.6",
+    "@vitest/coverage-istanbul": "^3.2.4",
+    "rimraf": "^5.0.10",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

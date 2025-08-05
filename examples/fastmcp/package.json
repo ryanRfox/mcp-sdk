@@ -1,0 +1,20 @@
+{
+  "name": "token-gated-timestamp",
+  "version": "1.0.0",
+  "description": "Simple example of token-gating MCP tools with Radius SDK",
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts",
+    "dev": "tsx watch index.ts"
+  },
+  "dependencies": {
+    "@radiustechsystems/mcp-sdk": "file:../..",
+    "fastmcp": "^3.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
