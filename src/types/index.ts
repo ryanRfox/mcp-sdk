@@ -61,6 +61,52 @@ export interface CacheConfig {
 export type MCPHandler = (request: MCPRequest, extra?: unknown) => Promise<MCPResponse>;
 
 /**
+ * FastMCP handler pattern - receives full request object
+ * This is an alias for the existing MCPHandler for clarity
+ */
+export type FastMCPHandler = MCPHandler;
+
+/**
+ * Standard MCP handler pattern - receives parsed arguments
+ * @template TArgs - Type of the handler arguments
+ * @template TResult - Type of the handler result
+ */
+export type StandardMCPHandler<TArgs = any, TResult = any> = 
+  (args: TArgs, extra?: unknown) => Promise<TResult> | TResult;
+
+/**
+ * Universal MCP handler supporting both patterns
+ * @template TArgs - Type of the handler arguments (for Standard pattern)
+ * @template TResult - Type of the handler result (for Standard pattern)
+ */
+export type UniversalMCPHandler<TArgs = any, TResult = any> = 
+  | StandardMCPHandler<TArgs, TResult>
+  | FastMCPHandler;
+
+/**
+ * Pattern detection result with confidence scoring
+ */
+export interface DetectionResult {
+  pattern: 'fastmcp' | 'standard';
+  confidence: number; // 0-1 scale
+  signals: string[]; // Detection signals used
+}
+
+/**
+ * Optional pattern hint for explicit pattern specification
+ */
+export interface PatternHint {
+  pattern?: 'fastmcp' | 'standard';
+}
+
+/**
+ * Options for the protect method
+ */
+export interface ProtectOptions extends PatternHint {
+  // Future options can be added here
+}
+
+/**
  * MCP request structure with EVMAuth proof support
  */
 export interface MCPRequest {

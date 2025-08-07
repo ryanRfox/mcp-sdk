@@ -266,6 +266,90 @@ server.addTool({
 });
 ```
 
+## Universal Adapter Pattern Support
+
+The SDK automatically detects and supports both **FastMCP** and **Standard MCP** patterns, allowing seamless integration regardless of your MCP framework choice.
+
+### Automatic Pattern Detection
+
+The SDK uses multi-signal detection to automatically identify which pattern your handler uses:
+
+```typescript
+// FastMCP pattern (2 parameters) - automatically detected
+const fastHandler = radius.protect(101, async (request, extra) => {
+  const args = request.params?.arguments || {};
+  return { content: [{ type: 'text', text: `Result: ${args.query}` }] };
+});
+
+// Standard MCP pattern (1 parameter) - automatically detected
+const standardHandler = radius.protect(102, async (args) => {
+  return { content: [{ type: 'text', text: `Result: ${args.query}` }] };
+});
+```
+
+### Mixed Pattern Usage
+
+Both patterns can coexist in the same application:
+
+```typescript
+const server = new FastMCP({ name: 'Mixed Server' });
+
+// FastMCP tool
+server.addTool({
+  name: 'fast_tool',
+  handler: radius.protect(101, async (request, extra) => {
+    const args = request.params?.arguments || {};
+    return processFastMCP(args);
+  })
+});
+
+// Standard MCP tool
+server.addTool({
+  name: 'standard_tool',
+  handler: radius.protect(102, async (args) => {
+    return processStandard(args);
+  })
+});
+```
+
+### Explicit Pattern Hints
+
+For edge cases where automatic detection might be ambiguous:
+
+```typescript
+// Option 1: Using pattern option
+const handler = radius.protect(101, myHandler, { pattern: 'fastmcp' });
+
+// Option 2: Using decorator utilities
+import { asFastMCP, asStandard } from '@radiustechsystems/mcp-sdk';
+
+const fastHandler = radius.protect(101, asFastMCP(async (request) => {
+  // Explicitly marked as FastMCP
+  return handleRequest(request);
+}));
+
+const standardHandler = radius.protect(102, asStandard(async (args) => {
+  // Explicitly marked as Standard MCP
+  return handleArgs(args);
+}));
+```
+
+### Pattern Detection Features
+
+- **Multi-Signal Analysis**: Combines parameter count, function signature, and request structure analysis
+- **Confidence Scoring**: Detection confidence from 0-1 with automatic caching
+- **Graceful Fallback**: Automatically tries alternative pattern on mismatch
+- **Performance Optimized**: WeakMap caching eliminates repeated detection overhead
+- **100% Backward Compatible**: All existing FastMCP code works unchanged
+
+### Why Universal Adapter?
+
+1. **Zero Configuration**: Works automatically without any setup
+2. **Framework Agnostic**: Support any MCP implementation pattern
+3. **Future Proof**: Adapts to evolving MCP ecosystem
+4. **Developer Friendly**: Clean error messages with debugging info
+5. **Production Ready**: Robust fallback mechanisms for edge cases
+
 ## Integration with the Radius MCP Server
 
 This SDK works in tandem with the **Radius MCP Server** to create a complete token-gating ecosystem:

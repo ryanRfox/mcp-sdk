@@ -10,7 +10,17 @@ import {
   recoverTypedDataAddress,
   type TypedData,
 } from 'viem';
-import type { CacheConfig, RadiusConfig, MCPHandler, MCPRequest, MCPResponse, EVMAuthErrorResponse, EVMAuthProof, ProofErrorCode } from './types/index.js';
+import type { 
+  CacheConfig, 
+  RadiusConfig, 
+  MCPRequest, 
+  EVMAuthErrorResponse, 
+  EVMAuthProof, 
+  ProofErrorCode,
+  UniversalMCPHandler,
+  DetectionResult,
+  ProtectOptions 
+} from './types/index.js';
 import { RadiusError } from './types/errors.js';
 
 const ERC1155_ABI = [
@@ -89,6 +99,7 @@ export class RadiusMcpSdk {
   private contract: GetContractReturnType<typeof ERC1155_ABI, PublicClient>;
   private cache: TokenCache;
   private config: Required<RadiusConfig>;
+  private handlerPatternCache = new WeakMap<Function, DetectionResult>();
 
   constructor(config: RadiusConfig) {
     const configWithDefaults = {
@@ -148,47 +159,231 @@ export class RadiusMcpSdk {
     }
   }
 
-  protect(tokenId: number | number[], handler: MCPHandler): MCPHandler {
+  /**
+   * Pattern detection with multi-signal analysis
+   */
+  private detectHandlerPattern(handler: Function, firstArg: any): DetectionResult {
+    // Check for decorator hint first
+    if ((handler as any).__pattern) {
+      const pattern = (handler as any).__pattern as 'fastmcp' | 'standard';
+      return { pattern, confidence: 1.0, signals: ['decorator-hint'] };
+    }
+
+    // Check cache
+    const cached = this.handlerPatternCache.get(handler);
+    if (cached && cached.confidence > 0.8) {
+      return cached;
+    }
+
+    const signals: string[] = [];
+    let standardScore = 0;
+    let fastmcpScore = 0;
+
+    // Signal 1: Parameter count (most reliable)
+    const paramCount = handler.length;
+    if (paramCount === 1) {
+      standardScore += 40;
+      signals.push('single-param');
+    } else if (paramCount === 2) {
+      fastmcpScore += 40;
+      signals.push('dual-param');
+    }
+
+    // Signal 2: Function signature analysis
+    const funcStr = handler.toString();
+    if (funcStr.includes('request.params') || funcStr.includes('request?.params')) {
+      fastmcpScore += 30;
+      signals.push('request-access');
+    }
+    if (funcStr.includes('request.method') || funcStr.includes('request?.method')) {
+      fastmcpScore += 10;
+      signals.push('method-access');
+    }
+
+    // Signal 3: First argument structure analysis
+    if (firstArg && typeof firstArg === 'object') {
+      if ('method' in firstArg || 'params' in firstArg) {
+        fastmcpScore += 20;
+        signals.push('request-shape');
+      } else if (!('method' in firstArg) && !('params' in firstArg)) {
+        standardScore += 20;
+        signals.push('args-shape');
+      }
+    }
+
+    const pattern: 'fastmcp' | 'standard' = standardScore > fastmcpScore ? 'standard' : 'fastmcp';
+    const confidence = Math.max(standardScore, fastmcpScore) / 100;
+    
+    const result: DetectionResult = { pattern, confidence, signals };
+    
+    // Cache high-confidence results
+    if (confidence > 0.7) {
+      this.handlerPatternCache.set(handler, result);
+    }
+    
+    if (this.config.debug) {
+      console.log('[Radius] Pattern detection', {
+        pattern,
+        confidence: `${Math.round(confidence * 100)}%`,
+        signals,
+        standardScore,
+        fastmcpScore
+      });
+    }
+    
+    return result;
+  }
+
+  /**
+   * Check if an error is due to pattern mismatch
+   */
+  private isPatternMismatchError(error: any): boolean {
+    const errorMessage = error?.message || '';
+    return errorMessage.includes('Cannot read properties') || 
+           errorMessage.includes('is not a function') ||
+           errorMessage.includes('Expected') ||
+           errorMessage.includes('undefined');
+  }
+
+  /**
+   * Execute handler with specific pattern
+   */
+  private async executePattern(
+    pattern: 'standard' | 'fastmcp',
+    handler: any,
+    requestOrArgs: any,
+    extra?: unknown
+  ): Promise<any> {
+    if (pattern === 'fastmcp') {
+      // FastMCP pattern - pass full request
+      return await handler(requestOrArgs, extra);
+    } else {
+      // Standard MCP pattern - pass just arguments
+      const args = requestOrArgs?.params?.arguments || requestOrArgs;
+      return await handler(args, extra);
+    }
+  }
+
+  /**
+   * Handle with fallback mechanism
+   */
+  private async handleWithFallback(
+    primaryPattern: 'standard' | 'fastmcp',
+    handler: any,
+    requestOrArgs: any,
+    extra?: unknown
+  ): Promise<any> {
+    try {
+      return await this.executePattern(primaryPattern, handler, requestOrArgs, extra);
+    } catch (error) {
+      if (this.isPatternMismatchError(error)) {
+        const fallbackPattern = primaryPattern === 'standard' ? 'fastmcp' : 'standard';
+        if (this.config.debug) {
+          console.log(`[Radius] Pattern mismatch detected, trying fallback: ${fallbackPattern}`);
+        }
+        try {
+          return await this.executePattern(fallbackPattern, handler, requestOrArgs, extra);
+        } catch (fallbackError) {
+          // If fallback also fails, throw original error with helpful message
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Handler pattern detection failed.\n` +
+            `Tried: ${primaryPattern} (failed), ${fallbackPattern} (failed)\n` +
+            `Hint: Use explicit pattern option or check handler signature\n` +
+            `Original error: ${errorMessage}`
+          );
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Enhanced protect method with Universal Adapter support
+   */
+  protect<TArgs = any, TResult = any>(
+    tokenId: number | number[], 
+    handler: UniversalMCPHandler<TArgs, TResult>,
+    options?: ProtectOptions
+  ): UniversalMCPHandler<TArgs, TResult> {
     const tokenIds = Array.isArray(tokenId) ? tokenId : [tokenId];
 
-    return async (request: MCPRequest, extra?: unknown): Promise<MCPResponse> => {
+    // Return a universal handler that can handle both patterns
+    return async (requestOrArgs: any, extra?: unknown): Promise<any> => {
       const authFlowId = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+
+      // Detect pattern - check if this is a request object or arguments
+      const isRequestObject = requestOrArgs && 
+        typeof requestOrArgs === 'object' && 
+        ('method' in requestOrArgs || 'params' in requestOrArgs);
+      
+      // Determine pattern to use
+      let pattern: 'fastmcp' | 'standard';
+      if (options?.pattern) {
+        // Use explicit pattern if provided
+        pattern = options.pattern;
+        if (this.config.debug) {
+          console.log('[Radius] Using explicit pattern hint', { pattern });
+        }
+      } else if (isRequestObject) {
+        // Detect pattern based on handler and first argument
+        const detection = this.detectHandlerPattern(handler, requestOrArgs);
+        pattern = detection.pattern;
+        if (this.config.debug && detection.confidence < 0.7) {
+          console.log('[Radius] Low confidence detection', detection);
+        }
+      } else {
+        // Assume Standard MCP if not a request object
+        pattern = 'standard';
+      }
+
+      // Extract request and arguments based on pattern
+      let request: MCPRequest;
+      let toolName: string;
+      let proof: EVMAuthProof | null;
+      
+      if (pattern === 'fastmcp' && isRequestObject) {
+        // FastMCP pattern - requestOrArgs is the request
+        request = requestOrArgs as MCPRequest;
+        const params = request?.params as { name?: string; arguments?: Record<string, unknown> };
+        toolName = params?.name || 'unknown_tool';
+        proof = this.extractProof(request);
+      } else {
+        // Standard MCP pattern - requestOrArgs contains arguments
+        const args = requestOrArgs as Record<string, unknown> & { __evmauth?: EVMAuthProof };
+        toolName = 'unknown_tool'; // Standard pattern doesn't provide tool name in args
+        
+        // Create synthetic request for auth verification
+        request = {
+          params: {
+            arguments: args
+          }
+        };
+        proof = this.extractProof(request);
+      }
 
       if (this.config.debug) {
         console.log('[Radius] Auth flow started', {
           step: 'auth_flow_start',
           authFlowId,
+          pattern,
           requiredTokens: tokenIds,
-          hasProof: !!(request?.params?.arguments as Record<string, unknown>)?.__evmauth,
+          hasProof: !!proof,
           hint: '__evmauth parameter is accepted on ALL protected tools regardless of schema',
         });
       }
 
-      const params = request?.params as { name?: string; arguments?: Record<string, unknown> };
-      const toolName = params?.name || 'unknown_tool';
-
       try {
         if (this.config.debug) {
-          console.log('[Radius] Full request structure', {
+          console.log('[Radius] Request inspection', {
             step: 'request_inspection',
             authFlowId,
-            method: request?.method,
-            hasParams: !!request?.params,
-            paramsKeys: request?.params ? Object.keys(request.params) : [],
-            hasArguments: !!params?.arguments,
-            argumentsType: typeof params?.arguments,
-            argumentsKeys:
-              params?.arguments && typeof params.arguments === 'object'
-                ? Object.keys(params.arguments)
-                : [],
-            argumentsPreview: params?.arguments
-              ? `${JSON.stringify(params.arguments).substring(0, 100)}...`
-              : 'none',
+            pattern,
             toolName,
           });
         }
 
-        const proof = this.extractProof(request);
+        // Check for proof
         if (!proof) {
           if (this.config.debug) {
             console.log('[Radius] Auth flow', {
@@ -210,6 +405,8 @@ export class RadiusMcpSdk {
           });
         }
 
+        // Extract arguments for verification
+        const params = request?.params as { arguments?: Record<string, unknown> };
         const toolArguments = params?.arguments || {};
         const argsForVerification = { ...toolArguments };
         delete argsForVerification.__evmauth;
@@ -260,8 +457,16 @@ export class RadiusMcpSdk {
           });
         }
 
-        const cleanRequest = this.stripAuth(request);
-        return await handler(cleanRequest, extra);
+        // Clean the request/args and call handler with pattern-specific approach
+        if (pattern === 'fastmcp') {
+          const cleanRequest = this.stripAuth(request);
+          return await this.handleWithFallback(pattern, handler, cleanRequest, extra);
+        } else {
+          // For Standard MCP, strip __evmauth from args
+          const cleanArgs = { ...requestOrArgs };
+          delete cleanArgs.__evmauth;
+          return await this.handleWithFallback(pattern, handler, cleanArgs, extra);
+        }
       } catch (error) {
         if (this.config.debug) {
           console.log('[Radius] Auth flow', {
@@ -850,4 +1055,22 @@ export class RadiusMcpSdk {
 
     return this.errorResponse('PROOF_INVALID', tokenIds, toolName);
   }
+}
+
+/**
+ * Decorator utility to explicitly mark a handler as FastMCP pattern
+ * Useful for edge cases where detection might be ambiguous
+ */
+export function asFastMCP<T extends Function>(handler: T): T & { __pattern?: 'fastmcp' } {
+  (handler as any).__pattern = 'fastmcp';
+  return handler;
+}
+
+/**
+ * Decorator utility to explicitly mark a handler as Standard MCP pattern
+ * Useful for edge cases where detection might be ambiguous
+ */
+export function asStandard<T extends Function>(handler: T): T & { __pattern?: 'standard' } {
+  (handler as any).__pattern = 'standard';
+  return handler;
 }

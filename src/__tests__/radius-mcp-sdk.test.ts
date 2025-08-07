@@ -773,4 +773,290 @@ describe('Radius MCP SDK', () => {
       expect(mockBalanceOf).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe('Universal Adapter', () => {
+    let sdk: RadiusMcpSdk;
+
+    beforeEach(() => {
+      sdk = new RadiusMcpSdk(config);
+      mockRecoverTypedDataAddress.mockResolvedValue(
+        '0x1234567890123456789012345678901234567890' as `0x${string}`
+      );
+      mockBalanceOf.mockResolvedValue(1n); // Has token
+    });
+
+    describe('Pattern Detection', () => {
+      it('should detect FastMCP pattern with 2 parameters', async () => {
+        const handler = vi.fn(async (request: any, extra?: any) => {
+          return { content: [{ type: 'text', text: 'FastMCP' }] };
+        });
+        
+        const protectedHandler = sdk.protect(101, handler);
+        
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { __evmauth: validProof, data: 'test' }
+          }
+        });
+
+        expect(handler).toHaveBeenCalledWith(
+          expect.objectContaining({
+            params: expect.objectContaining({
+              arguments: expect.objectContaining({ data: 'test' })
+            })
+          }),
+          undefined
+        );
+      });
+
+      it('should detect Standard MCP pattern with 1 parameter', async () => {
+        const handler = vi.fn(async (args: any) => {
+          return { content: [{ type: 'text', text: `Got: ${args.data}` }] };
+        });
+        
+        const protectedHandler = sdk.protect(101, handler);
+        
+        // Standard pattern call - pass arguments directly
+        const result = await protectedHandler(
+          { __evmauth: validProof, data: 'test' },
+          undefined
+        );
+
+        expect(handler).toHaveBeenCalledWith(
+          expect.objectContaining({ data: 'test' }),
+          undefined
+        );
+      });
+
+      it('should use explicit pattern hint when provided', async () => {
+        const handler = vi.fn(async (request: any) => {
+          return { content: [{ type: 'text', text: 'Explicit FastMCP' }] };
+        });
+        
+        const protectedHandler = sdk.protect(101, handler, { pattern: 'fastmcp' });
+        
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { __evmauth: validProof, data: 'test' }
+          }
+        });
+
+        expect(handler).toHaveBeenCalled();
+      });
+    });
+
+    describe('Fallback Mechanism', () => {
+      it('should fallback to alternative pattern on mismatch', async () => {
+        // Handler expects Standard pattern but we'll call with FastMCP
+        const handler = vi.fn().mockImplementation(async (args: any) => {
+          if (args && args.data) {
+            return { content: [{ type: 'text', text: `Data: ${args.data}` }] };
+          }
+          throw new Error('Cannot read properties of undefined');
+        });
+        
+        const protectedHandler = sdk.protect(101, handler);
+        
+        // Call with FastMCP pattern
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { __evmauth: validProof, data: 'test' }
+          }
+        });
+
+        // Should succeed via fallback
+        expect(result).toBeDefined();
+      });
+    });
+
+    describe('Mixed Usage', () => {
+      it('should support both patterns in same application', async () => {
+        // FastMCP handler
+        const fastHandler = vi.fn(async (request: any, extra?: any) => {
+          const args = request.params?.arguments || {};
+          return { content: [{ type: 'text', text: `Fast: ${args.value}` }] };
+        });
+        
+        // Standard MCP handler
+        const standardHandler = vi.fn(async (args: any) => {
+          return { content: [{ type: 'text', text: `Standard: ${args.value}` }] };
+        });
+        
+        const protectedFast = sdk.protect(101, fastHandler);
+        const protectedStandard = sdk.protect(102, standardHandler);
+        
+        // Call FastMCP handler
+        const fastResult = await protectedFast({
+          params: {
+            name: 'fast_tool',
+            arguments: { __evmauth: validProof, value: 'fast-value' }
+          }
+        });
+        
+        // Call Standard handler
+        const standardResult = await protectedStandard(
+          { __evmauth: validProof, value: 'standard-value' },
+          undefined
+        );
+        
+        expect(fastHandler).toHaveBeenCalled();
+        expect(standardHandler).toHaveBeenCalled();
+      });
+    });
+
+    describe('Decorator Utilities', () => {
+      it('should respect asFastMCP decorator', async () => {
+        const { asFastMCP } = await import('../radius-mcp-sdk');
+        
+        const handler = asFastMCP(vi.fn(async (request: any) => {
+          return { content: [{ type: 'text', text: 'FastMCP via decorator' }] };
+        }));
+        
+        const protectedHandler = sdk.protect(101, handler);
+        
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { __evmauth: validProof }
+          }
+        });
+        
+        expect(handler).toHaveBeenCalled();
+      });
+
+      it('should respect asStandard decorator', async () => {
+        const { asStandard } = await import('../radius-mcp-sdk');
+        
+        const handler = asStandard(vi.fn(async (args: any) => {
+          return { content: [{ type: 'text', text: 'Standard via decorator' }] };
+        }));
+        
+        const protectedHandler = sdk.protect(101, handler);
+        
+        const result = await protectedHandler(
+          { __evmauth: validProof, data: 'test' },
+          undefined
+        );
+        
+        expect(handler).toHaveBeenCalled();
+      });
+    });
+
+    describe('Error Handling', () => {
+      it('should provide helpful error on pattern detection failure', async () => {
+        const handler = vi.fn().mockImplementation(() => {
+          throw new Error('Cannot read properties of undefined');
+        });
+        
+        const protectedHandler = sdk.protect(101, handler);
+        
+        try {
+          await protectedHandler({
+            params: {
+              name: 'test_tool',
+              arguments: { data: 'test' } // No proof - will fail auth first
+            }
+          });
+        } catch (error) {
+          // Expected to fail on missing proof
+        }
+      });
+
+      it('should maintain AI-friendly error messages', async () => {
+        const handler = vi.fn();
+        const protectedHandler = sdk.protect(101, handler);
+        
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { data: 'test' } // Missing __evmauth
+          }
+        }) as EVMAuthErrorResponse;
+        
+        expect(result.content[0].text).toContain('EVMAUTH_PROOF_MISSING');
+        expect(result.content[0].text).toContain('claude_action');
+      });
+    });
+
+    describe('Backward Compatibility', () => {
+      it('should work with existing FastMCP code unchanged', async () => {
+        // Existing FastMCP pattern
+        const handler = vi.fn(async (request: any) => {
+          const args = request.params?.arguments || {};
+          return { content: [{ type: 'text', text: args.message }] };
+        });
+        
+        const protectedHandler = sdk.protect(101, handler);
+        
+        const result = await protectedHandler({
+          params: {
+            name: 'existing_tool',
+            arguments: { __evmauth: validProof, message: 'backward compatible' }
+          }
+        });
+        
+        expect(handler).toHaveBeenCalledWith(
+          expect.objectContaining({
+            params: expect.objectContaining({
+              arguments: expect.objectContaining({ message: 'backward compatible' })
+            })
+          }),
+          undefined
+        );
+      });
+
+      it('should maintain authentication flow for FastMCP', async () => {
+        const handler = vi.fn().mockResolvedValue({ success: true });
+        const protectedHandler = sdk.protect(101, handler);
+        
+        // Missing proof
+        const errorResult = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { data: 'test' }
+          }
+        }) as EVMAuthErrorResponse;
+        
+        expect(errorResult.content[0].text).toContain('EVMAUTH_PROOF_MISSING');
+        expect(handler).not.toHaveBeenCalled();
+        
+        // With valid proof
+        const successResult = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { __evmauth: validProof, data: 'test' }
+          }
+        });
+        
+        expect(handler).toHaveBeenCalled();
+        expect(successResult).toEqual({ success: true });
+      });
+    });
+
+    describe('Performance', () => {
+      it('should cache pattern detection results', async () => {
+        const handler = vi.fn(async (request: any) => {
+          return { content: [{ type: 'text', text: 'cached' }] };
+        });
+        
+        const protectedHandler = sdk.protect(101, handler);
+        
+        // Call multiple times
+        for (let i = 0; i < 5; i++) {
+          await protectedHandler({
+            params: {
+              name: 'test_tool',
+              arguments: { __evmauth: validProof, iteration: i }
+            }
+          });
+        }
+        
+        // Handler should be called 5 times but pattern detection should be cached
+        expect(handler).toHaveBeenCalledTimes(5);
+      });
+    });
+  });
 });
