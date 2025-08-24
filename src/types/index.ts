@@ -1,5 +1,40 @@
 export * from './errors.js';
 
+// MCP SDK Types (from @modelcontextprotocol/sdk)
+export interface RequestHandlerExtra {
+  request?: {
+    method: string;
+    params?: unknown;
+  };
+  sessionId?: string;
+  signal?: AbortSignal;
+  meta?: Record<string, unknown>;
+}
+
+export interface CallToolResult {
+  content: Array<{
+    type: 'text' | 'image' | 'resource';
+    text?: string;
+    data?: unknown;
+  }>;
+  isError?: boolean;
+  _meta?: Record<string, unknown>;
+}
+
+// FastMCP Context Type
+export interface FastMcpContext {
+  log?: {
+    debug?: (message: string, data?: unknown) => void;
+    error?: (message: string, data?: unknown) => void;
+    info?: (message: string, data?: unknown) => void;
+    warn?: (message: string, data?: unknown) => void;
+  };
+  reportProgress?: (progress: { progress: number; total: number }) => Promise<void>;
+  streamContent?: (content: unknown) => Promise<void>;
+  session?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface RadiusConfig {
   /**
    * ERC-1155 contract address for token ownership verification

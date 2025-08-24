@@ -874,6 +874,18 @@ describe('Radius MCP SDK', () => {
 
     describe('Mixed Usage', () => {
       it('should support both patterns in same application', async () => {
+        // Create proof for fast_tool
+        const fastProof = {
+          ...validProof,
+          challenge: {
+            ...validProof.challenge,
+            message: {
+              ...validProof.challenge.message,
+              resourceName: 'fast_tool'
+            }
+          }
+        };
+        
         // FastMCP handler
         const fastHandler = vi.fn(async (request: any, extra?: any) => {
           const args = request.params?.arguments || {};
@@ -892,11 +904,11 @@ describe('Radius MCP SDK', () => {
         const fastResult = await protectedFast({
           params: {
             name: 'fast_tool',
-            arguments: { __evmauth: validProof, value: 'fast-value' }
+            arguments: { __evmauth: fastProof, value: 'fast-value' }
           }
         });
         
-        // Call Standard handler
+        // Call Standard handler (uses test_tool from validProof)
         const standardResult = await protectedStandard(
           { __evmauth: validProof, value: 'standard-value' },
           undefined
@@ -983,6 +995,18 @@ describe('Radius MCP SDK', () => {
 
     describe('Backward Compatibility', () => {
       it('should work with existing FastMCP code unchanged', async () => {
+        // Create proof for existing_tool
+        const existingToolProof = {
+          ...validProof,
+          challenge: {
+            ...validProof.challenge,
+            message: {
+              ...validProof.challenge.message,
+              resourceName: 'existing_tool'
+            }
+          }
+        };
+        
         // Existing FastMCP pattern
         const handler = vi.fn(async (request: any) => {
           const args = request.params?.arguments || {};
@@ -994,7 +1018,7 @@ describe('Radius MCP SDK', () => {
         const result = await protectedHandler({
           params: {
             name: 'existing_tool',
-            arguments: { __evmauth: validProof, message: 'backward compatible' }
+            arguments: { __evmauth: existingToolProof, message: 'backward compatible' }
           }
         });
         
