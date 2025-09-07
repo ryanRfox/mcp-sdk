@@ -10,7 +10,7 @@ import {
   recoverTypedDataAddress,
   type TypedData,
 } from 'viem';
-import type { CacheConfig, RadiusConfig, MCPHandler, MCPRequest, MCPResponse, EVMAuthErrorResponse, EVMAuthProof, ProofErrorCode } from './types/index.js';
+import type { CacheConfig, RadiusConfig, MCPRequest, MCPResponse, EVMAuthErrorResponse, EVMAuthProof, ProofErrorCode } from './types/index.js';
 import { RadiusError } from './types/errors.js';
 
 const ERC1155_ABI = [
@@ -148,10 +148,10 @@ export class RadiusMcpSdk {
     }
   }
 
-  protect(tokenId: number | number[], handler: MCPHandler): MCPHandler {
+  protect<T extends (...args: any[]) => any>(tokenId: number | number[], handler: T): T {
     const tokenIds = Array.isArray(tokenId) ? tokenId : [tokenId];
 
-    return async (request: MCPRequest, extra?: unknown): Promise<MCPResponse> => {
+    return (async (request: MCPRequest, extra?: unknown): Promise<MCPResponse> => {
       const authFlowId = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 
       if (this.config.debug) {
@@ -274,7 +274,7 @@ export class RadiusMcpSdk {
         }
         return this.handleError(error as Error, tokenIds, toolName);
       }
-    };
+    }) as T;
   }
 
   private extractProof(request: MCPRequest): EVMAuthProof | null {
