@@ -773,4 +773,254 @@ describe('Radius MCP SDK', () => {
       expect(mockBalanceOf).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe('Input Format Tolerance', () => {
+    let sdk: RadiusMcpSdk;
+
+    beforeEach(() => {
+      sdk = new RadiusMcpSdk({ ...config, debug: true });
+      mockRecoverTypedDataAddress.mockResolvedValue(
+        '0x1234567890123456789012345678901234567890' as `0x${string}`
+      );
+      mockBalanceOf.mockResolvedValue(1n);
+    });
+
+    describe('JSON String Format', () => {
+      it('should accept __evmauth as JSON string', async () => {
+        const handler = vi.fn().mockResolvedValue({ success: true });
+        const protectedHandler = sdk.protect(101, handler);
+
+        // Convert proof to JSON string
+        const stringifiedProof = JSON.stringify(validProof);
+
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { 
+              __evmauth: stringifiedProof, // JSON string format
+              data: 'test' 
+            }
+          }
+        });
+
+        expect(handler).toHaveBeenCalled();
+        expect(result).toEqual({ success: true });
+      });
+
+      it('should handle nested JSON string serialization', async () => {
+        const handler = vi.fn().mockResolvedValue({ success: true });
+        const protectedHandler = sdk.protect(101, handler);
+
+        // Simulate double-serialized auth (common in proxy scenarios)
+        const doubleStringified = JSON.stringify(JSON.stringify(validProof));
+
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { 
+              __evmauth: JSON.parse(doubleStringified), // This becomes a string after parsing
+              data: 'test' 
+            }
+          }
+        });
+
+        expect(handler).toHaveBeenCalled();
+        expect(result).toEqual({ success: true });
+      });
+
+      it('should provide helpful error for invalid JSON string', async () => {
+        const handler = vi.fn();
+        const protectedHandler = sdk.protect(101, handler);
+
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { 
+              __evmauth: '{ invalid json }', // Invalid JSON
+              data: 'test' 
+            }
+          }
+        });
+
+        expect(handler).not.toHaveBeenCalled();
+        const errorResponse = result as EVMAuthErrorResponse;
+        expect(errorResponse.content[0].text).toContain('PROOF_MISSING');
+      });
+
+      it('should handle malformed JSON gracefully', async () => {
+        const handler = vi.fn();
+        const protectedHandler = sdk.protect(101, handler);
+
+        const testCases = [
+          '{ "challenge": }', // Incomplete JSON
+          '{ "challenge": null, "signature": }', // Missing value
+          '{ "challenge": {}, "signature": "invalid" }', // Invalid structure
+          '', // Empty string
+          'null', // JSON null
+          'undefined', // Not valid JSON
+        ];
+
+        for (const malformedJson of testCases) {
+          const result = await protectedHandler({
+            params: {
+              name: 'test_tool',
+              arguments: { 
+                __evmauth: malformedJson,
+                data: 'test' 
+              }
+            }
+          });
+
+          expect(handler).not.toHaveBeenCalled();
+          const errorResponse = result as EVMAuthErrorResponse;
+          expect(errorResponse.content[0].text).toContain('PROOF_MISSING');
+        }
+      });
+    });
+
+    describe('Object Format', () => {
+      it('should continue to accept __evmauth as parsed object', async () => {
+        const handler = vi.fn().mockResolvedValue({ success: true });
+        const protectedHandler = sdk.protect(101, handler);
+
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { 
+              __evmauth: validProof, // Object format (existing behavior)
+              data: 'test' 
+            }
+          }
+        });
+
+        expect(handler).toHaveBeenCalled();
+        expect(result).toEqual({ success: true });
+      });
+
+      it('should reject non-object, non-string __evmauth', async () => {
+        const handler = vi.fn();
+        const protectedHandler = sdk.protect(101, handler);
+
+        const invalidTypes = [
+          123, // number
+          true, // boolean
+          [], // array
+          null, // null
+          undefined, // undefined
+        ];
+
+        for (const invalidAuth of invalidTypes) {
+          const result = await protectedHandler({
+            params: {
+              name: 'test_tool',
+              arguments: { 
+                __evmauth: invalidAuth,
+                data: 'test' 
+              }
+            }
+          });
+
+          expect(handler).not.toHaveBeenCalled();
+          const errorResponse = result as EVMAuthErrorResponse;
+          expect(errorResponse.content[0].text).toContain('PROOF_MISSING');
+        }
+      });
+    });
+
+    describe('Mixed Format Compatibility', () => {
+      it('should work with various MCP client serialization patterns', async () => {
+        const handler = vi.fn().mockResolvedValue({ success: true });
+        const protectedHandler = sdk.protect(101, handler);
+
+        // Test different client patterns
+        const clientPatterns = [
+          // Node.js MCP client (direct object)
+          { __evmauth: validProof },
+          
+          // Web client (JSON string)
+          { __evmauth: JSON.stringify(validProof) },
+          
+          // Proxy server (might add extra serialization layer)
+          { __evmauth: JSON.stringify(validProof) },
+        ];
+
+        for (const [index, args] of clientPatterns.entries()) {
+          const result = await protectedHandler({
+            params: {
+              name: 'test_tool',
+              arguments: { ...args, data: `test-${index}` }
+            }
+          });
+
+          expect(handler).toHaveBeenCalledTimes(index + 1);
+          expect(result).toEqual({ success: true });
+        }
+      });
+    });
+
+    describe('Debug Logging', () => {
+      it('should log format detection for string inputs', async () => {
+        const consoleSpy = vi.spyOn(console, 'log');
+        const handler = vi.fn().mockResolvedValue({ success: true });
+        const protectedHandler = sdk.protect(101, handler);
+
+        await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { 
+              __evmauth: JSON.stringify(validProof),
+              data: 'test' 
+            }
+          }
+        });
+
+        // Should log format detection
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining('[Radius] Processing stringified proof'),
+          expect.objectContaining({
+            step: 'proof_extraction',
+            inputFormat: 'json_string',
+          })
+        );
+
+        // Should log successful parsing
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining('[Radius] Successfully parsed stringified proof'),
+          expect.objectContaining({
+            wasStringified: true,
+            success: true,
+          })
+        );
+
+        consoleSpy.mockRestore();
+      });
+
+      it('should log format detection for object inputs', async () => {
+        const consoleSpy = vi.spyOn(console, 'log');
+        const handler = vi.fn().mockResolvedValue({ success: true });
+        const protectedHandler = sdk.protect(101, handler);
+
+        await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { 
+              __evmauth: validProof, // Object format
+              data: 'test' 
+            }
+          }
+        });
+
+        // Should log object processing
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining('[Radius] Processing object proof'),
+          expect.objectContaining({
+            step: 'proof_extraction',
+            inputFormat: 'parsed_object',
+          })
+        );
+
+        consoleSpy.mockRestore();
+      });
+    });
+  });
 });

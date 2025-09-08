@@ -284,32 +284,84 @@ export class RadiusMcpSdk {
     let auth = (args as Record<string, unknown>).__evmauth;
     if (!auth) return null;
 
+    // Handle JSON string format (common with web-based MCP clients)
     if (typeof auth === 'string') {
+      if (this.config.debug) {
+        console.log('[Radius] Processing stringified proof', {
+          step: 'proof_extraction',
+          inputFormat: 'json_string',
+          stringLength: auth.length,
+          stringPreview: auth.substring(0, 100) + (auth.length > 100 ? '...' : ''),
+        });
+      }
+
       try {
         auth = JSON.parse(auth);
         if (this.config.debug) {
-          console.log('[Radius] Parsed stringified proof', {
+          console.log('[Radius] Successfully parsed stringified proof', {
             step: 'proof_extraction',
             wasStringified: true,
             success: true,
+            resultType: typeof auth,
+            hasChallenge: !!(auth && typeof auth === 'object' && (auth as any).challenge),
+            hasSignature: !!(auth && typeof auth === 'object' && (auth as any).signature),
           });
         }
       } catch (error) {
         if (this.config.debug) {
           console.log('[Radius] Failed to parse stringified proof', {
             step: 'proof_extraction',
+            inputFormat: 'invalid_json_string',
             error: (error as Error).message,
+            stringLength: auth.length,
             success: false,
+            troubleshooting: 'Ensure __evmauth is valid JSON when sent as string',
           });
         }
         return null;
       }
     }
 
-    if (typeof auth !== 'object') return null;
+    // Handle object format (common with Node.js MCP clients)
+    if (typeof auth === 'object' && auth !== null) {
+      if (this.config.debug) {
+        console.log('[Radius] Processing object proof', {
+          step: 'proof_extraction',
+          inputFormat: 'parsed_object',
+          hasChallenge: !!(auth as any).challenge,
+          hasSignature: !!(auth as any).signature,
+        });
+      }
+    } else {
+      if (this.config.debug) {
+        console.log('[Radius] Invalid proof format', {
+          step: 'proof_extraction',
+          inputFormat: typeof auth,
+          expectedFormats: ['object', 'json_string'],
+          troubleshooting: '__evmauth must be either a parsed object or JSON string',
+        });
+      }
+      return null;
+    }
 
+    // Validate the proof structure
     if (this.isValidProof(auth)) {
+      if (this.config.debug) {
+        console.log('[Radius] Proof validation successful', {
+          step: 'proof_validation',
+          success: true,
+        });
+      }
       return auth as EVMAuthProof;
+    } else {
+      if (this.config.debug) {
+        console.log('[Radius] Proof validation failed', {
+          step: 'proof_validation',
+          success: false,
+          reason: 'Invalid proof structure or missing required fields',
+          troubleshooting: 'Ensure proof has valid challenge and signature fields',
+        });
+      }
     }
 
     return null;
