@@ -646,8 +646,9 @@ describe('Radius MCP SDK', () => {
     });
 
     it('should include debug info when debug is enabled', async () => {
+      // Spy must be created before SDK instantiation
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
       const debugSdk = new RadiusMcpSdk({ ...config, debug: true });
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const walletAddress = validProof.challenge.message.walletAddress;
       mockRecoverTypedDataAddress.mockResolvedValue(walletAddress);
@@ -666,12 +667,15 @@ describe('Radius MCP SDK', () => {
       // Should log both token check failure and unexpected error
       expect(consoleSpy).toHaveBeenCalled();
 
-      // Check for the unexpected error log
-      const unexpectedErrorCall = consoleSpy.mock.calls.find(
-        (call) => call[0] === '[Radius SDK] Unexpected error:'
+      // Check for error log (debug logger adds [ERROR] prefix)
+      const errorCall = consoleSpy.mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].includes('[ERROR]')
       );
-      expect(unexpectedErrorCall).toBeDefined();
-      expect(unexpectedErrorCall?.[1]).toMatchObject({
+      expect(errorCall).toBeDefined();
+      
+      // Check that error context is included
+      const errorContext = errorCall?.[1] as Record<string, unknown>;
+      expect(errorContext?.error).toMatchObject({
         message: 'ETIMEDOUT',
         name: 'Error',
       });

@@ -12,6 +12,7 @@ import {
 } from 'viem';
 import type { CacheConfig, RadiusConfig, MCPHandler, MCPRequest, MCPResponse, EVMAuthErrorResponse, EVMAuthProof, ProofErrorCode } from './types/index.js';
 import { RadiusError } from './types/errors.js';
+import { DebugLogger } from './utils/debug-logger.js';
 
 const ERC1155_ABI = [
   {
@@ -89,6 +90,7 @@ export class RadiusMcpSdk {
   private contract: GetContractReturnType<typeof ERC1155_ABI, PublicClient>;
   private cache: TokenCache;
   private config: Required<RadiusConfig>;
+  private debugLogger: DebugLogger;
 
   constructor(config: RadiusConfig) {
     const configWithDefaults = {
@@ -137,14 +139,36 @@ export class RadiusMcpSdk {
     });
 
     this.cache = new TokenCache(this.config.cache);
+    
+    // Initialize debug logger
+    this.debugLogger = new DebugLogger(this.config.debug);
 
     // Warn if debug mode is enabled
-    if (config.debug) {
+    if (this.debugLogger.isEnabled()) {
       console.warn(
         '\n⚠️  WARNING: Debug mode is enabled in Radius MCP SDK\n' +
+        `   Debug level: ${this.debugLogger.getLevel()}\n` +
         '   Debug mode may expose sensitive information in logs.\n' +
         '   DO NOT use debug mode in production environments!\n'
       );
+    }
+  }
+
+  /**
+   * Helper to log debug messages with backward compatibility
+   */
+  private log(message: string, context: Record<string, unknown>): void {
+    // Map old debug calls to appropriate levels based on step
+    const step = context.step as string;
+    
+    if (step?.includes('error') || step?.includes('failed')) {
+      this.debugLogger.verbose(message, context);
+    } else if (step?.includes('start') || step?.includes('complete')) {
+      this.debugLogger.basic(message, context);
+    } else if (step?.includes('extraction') || step?.includes('verification')) {
+      this.debugLogger.verbose(message, context);
+    } else {
+      this.debugLogger.verbose(message, context);
     }
   }
 
@@ -154,22 +178,34 @@ export class RadiusMcpSdk {
     return async (request: MCPRequest, extra?: unknown): Promise<MCPResponse> => {
       const authFlowId = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 
-      if (this.config.debug) {
-        console.log('[Radius] Auth flow started', {
-          step: 'auth_flow_start',
-          authFlowId,
-          requiredTokens: tokenIds,
-          hasProof: !!(request?.params?.arguments as Record<string, unknown>)?.__evmauth,
-          hint: '__evmauth parameter is accepted on ALL protected tools regardless of schema',
-        });
-      }
+      // Basic: Auth flow start
+      this.debugLogger.basic('[Radius] Auth flow started', {
+        step: 'auth_flow_start',
+        authFlowId,
+        requiredTokens: tokenIds,
+        hasProof: !!(request?.params?.arguments as Record<string, unknown>)?.__evmauth,
+      });
+      
+      // Verbose: Additional hints  
+      this.debugLogger.verbose('[Radius] Auth flow hints', {
+        authFlowId,
+        hint: '__evmauth parameter is accepted on ALL protected tools regardless of schema',
+      });
+      
+      // Transport: Raw request data (NEW enhanced logging)
+      this.debugLogger.transport('[Radius] Raw request', {
+        step: 'request_raw',
+        authFlowId,
+        method: (request as Record<string, unknown>).method,
+        params: request?.params,
+      });
 
       const params = request?.params as { name?: string; arguments?: Record<string, unknown> };
       const toolName = params?.name || 'unknown_tool';
 
       try {
         if (this.config.debug) {
-          console.log('[Radius] Full request structure', {
+          this.log('[Radius] Full request structure', {
             step: 'request_inspection',
             authFlowId,
             method: request?.method,
@@ -191,7 +227,7 @@ export class RadiusMcpSdk {
         const proof = this.extractProof(request);
         if (!proof) {
           if (this.config.debug) {
-            console.log('[Radius] Auth flow', {
+            this.log('[Radius] Auth flow', {
               step: 'proof_missing',
               authFlowId,
               success: false,
@@ -202,7 +238,7 @@ export class RadiusMcpSdk {
         }
 
         if (this.config.debug) {
-          console.log('[Radius] Auth flow', {
+          this.log('[Radius] Auth flow', {
             step: 'proof_verification_start',
             authFlowId,
             proofPurpose: proof.challenge.message.purpose,
@@ -217,7 +253,7 @@ export class RadiusMcpSdk {
         const walletAddress = await this.verifyProof(proof, toolName, argsForVerification);
 
         if (this.config.debug) {
-          console.log('[Radius] Auth flow', {
+          this.log('[Radius] Auth flow', {
             step: 'proof_verification_success',
             authFlowId,
             wallet: walletAddress,
@@ -226,7 +262,7 @@ export class RadiusMcpSdk {
         }
 
         if (this.config.debug) {
-          console.log('[Radius] Auth flow', {
+          this.log('[Radius] Auth flow', {
             step: 'token_check_start',
             authFlowId,
             wallet: walletAddress,
@@ -238,7 +274,7 @@ export class RadiusMcpSdk {
 
         if (!hasAccess) {
           if (this.config.debug) {
-            console.log('[Radius] Auth flow', {
+            this.log('[Radius] Auth flow', {
               step: 'token_check_failed',
               authFlowId,
               wallet: walletAddress,
@@ -251,7 +287,7 @@ export class RadiusMcpSdk {
         }
 
         if (this.config.debug) {
-          console.log('[Radius] Auth flow', {
+          this.log('[Radius] Auth flow', {
             step: 'auth_flow_complete',
             authFlowId,
             wallet: walletAddress,
@@ -264,7 +300,7 @@ export class RadiusMcpSdk {
         return await handler(cleanRequest, extra);
       } catch (error) {
         if (this.config.debug) {
-          console.log('[Radius] Auth flow', {
+          this.log('[Radius] Auth flow', {
             step: 'auth_flow_error',
             authFlowId,
             success: false,
@@ -288,7 +324,7 @@ export class RadiusMcpSdk {
       try {
         auth = JSON.parse(auth);
         if (this.config.debug) {
-          console.log('[Radius] Parsed stringified proof', {
+          this.log('[Radius] Parsed stringified proof', {
             step: 'proof_extraction',
             wasStringified: true,
             success: true,
@@ -296,7 +332,7 @@ export class RadiusMcpSdk {
         }
       } catch (error) {
         if (this.config.debug) {
-          console.log('[Radius] Failed to parse stringified proof', {
+          this.log('[Radius] Failed to parse stringified proof', {
             step: 'proof_extraction',
             error: (error as Error).message,
             success: false,
@@ -378,7 +414,7 @@ export class RadiusMcpSdk {
     const expiresAt = parseInt(message.expiresAt);
     if (Date.now() > expiresAt) {
       if (this.config.debug) {
-        console.log('[Radius] Proof verification failed', {
+        this.log('[Radius] Proof verification failed', {
           step: 'proof_verification',
           reason: 'expired',
           expiresAt: new Date(expiresAt).toISOString(),
@@ -391,7 +427,7 @@ export class RadiusMcpSdk {
 
     if (domain.name !== 'EVMAuth' || domain.version !== '1') {
       if (this.config.debug) {
-        console.log('[Radius] Proof verification failed', {
+        this.log('[Radius] Proof verification failed', {
           step: 'proof_verification',
           reason: 'invalid_domain',
           expected: { name: 'EVMAuth', version: '1' },
@@ -404,7 +440,7 @@ export class RadiusMcpSdk {
 
     if (domain.chainId !== this.config.chainId) {
       if (this.config.debug) {
-        console.log('[Radius] Proof verification failed', {
+        this.log('[Radius] Proof verification failed', {
           step: 'proof_verification',
           reason: 'chain_mismatch',
           expectedChainId: this.config.chainId,
@@ -420,7 +456,7 @@ export class RadiusMcpSdk {
 
     if (domain.verifyingContract.toLowerCase() !== this.config.contractAddress.toLowerCase()) {
       if (this.config.debug) {
-        console.log('[Radius] Proof verification failed', {
+        this.log('[Radius] Proof verification failed', {
           step: 'proof_verification',
           reason: 'contract_mismatch',
           expectedContract: this.config.contractAddress,
@@ -439,7 +475,7 @@ export class RadiusMcpSdk {
 
     if (resourceToolName !== toolName) {
       if (this.config.debug) {
-        console.log('[Radius] Proof verification failed', {
+        this.log('[Radius] Proof verification failed', {
           step: 'proof_verification',
           reason: 'tool_mismatch',
           expectedTool: toolName,
@@ -476,7 +512,7 @@ export class RadiusMcpSdk {
 
         if (expectedHash !== message.requestHash) {
           if (this.config.debug) {
-            console.log('[Radius] Proof verification failed', {
+            this.log('[Radius] Proof verification failed', {
               step: 'proof_verification',
               reason: 'request_hash_mismatch',
               expectedHash,
@@ -508,7 +544,7 @@ export class RadiusMcpSdk {
 
     if (!constantTimeEqual(signerLower, expectedLower)) {
       if (this.config.debug) {
-        console.log('[Radius] Proof verification failed', {
+        this.log('[Radius] Proof verification failed', {
           step: 'proof_verification',
           reason: 'signer_mismatch',
           expectedWallet: message.walletAddress,
@@ -520,7 +556,7 @@ export class RadiusMcpSdk {
     }
 
     if (this.config.debug) {
-      console.log('[Radius] Proof verification succeeded', {
+      this.log('[Radius] Proof verification succeeded', {
         step: 'proof_verification',
         wallet: signerAddress,
         chainId: domain.chainId,
@@ -601,7 +637,7 @@ export class RadiusMcpSdk {
         }
 
         if (this.config.debug) {
-          console.log('[Radius] Token ownership check', {
+          this.log('[Radius] Token ownership check', {
             step: 'token_check',
             wallet,
             tokenOwnership,
@@ -615,7 +651,7 @@ export class RadiusMcpSdk {
       }
     } catch (error) {
       if (this.config.debug) {
-        console.error('[Radius SDK] Token check failed', {
+        this.debugLogger.error('[Radius SDK] Token check failed', error as Error, {
           step: 'token_check',
           wallet,
           tokenIds,
@@ -766,7 +802,7 @@ export class RadiusMcpSdk {
 
   private handleError(error: Error, tokenIds?: number[], toolName?: string): EVMAuthErrorResponse {
     if (this.config.debug) {
-      console.error('[Radius SDK] Unexpected error:', {
+      this.debugLogger.error('[Radius SDK] Unexpected error', error as Error, {
         message: error.message,
         stack: error.stack,
         name: error.name,

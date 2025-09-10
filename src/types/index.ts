@@ -1,5 +1,37 @@
 export * from './errors.js';
 
+/**
+ * Debug logging levels for the Radius SDK
+ * - 'none': No debug logging
+ * - 'basic': Basic auth flow start/end (default for debug: true)
+ * - 'verbose': Detailed step-by-step flow
+ * - 'transport': Includes raw request/response data (sanitized)
+ * - 'trace': Everything including internal state changes
+ */
+export type DebugLevel = 'none' | 'basic' | 'verbose' | 'transport' | 'trace';
+
+/**
+ * Debug configuration for granular logging control
+ */
+export interface DebugConfig {
+  /**
+   * Debug logging level
+   * @default 'none'
+   */
+  level: DebugLevel;
+  
+  /**
+   * Include timestamps in debug output
+   * @default true
+   */
+  timestamps?: boolean;
+  
+  /**
+   * Custom logger function (defaults to console.log)
+   */
+  logger?: (message: string, context?: Record<string, unknown>) => void;
+}
+
 export interface RadiusConfig {
   /**
    * ERC-1155 contract address for token ownership verification
@@ -28,10 +60,13 @@ export interface RadiusConfig {
   cache?: CacheConfig;
 
   /**
-   * Enable debug logging
+   * Debug logging configuration
+   * - boolean: true maps to 'basic' level, false to 'none'
+   * - DebugLevel: string literal for specific level
+   * - DebugConfig: object for full control
    * @default false
    */
-  debug?: boolean;
+  debug?: boolean | DebugLevel | DebugConfig;
 }
 
 export interface CacheConfig {
