@@ -12,6 +12,7 @@ import {
 } from 'viem';
 import type { CacheConfig, RadiusConfig, MCPHandler, MCPRequest, MCPResponse, EVMAuthErrorResponse, EVMAuthProof, ProofErrorCode } from './types/index.js';
 import { RadiusError } from './types/errors.js';
+import { extractToolName } from './utils/resource-parser.js';
 
 const ERC1155_ABI = [
   {
@@ -165,7 +166,8 @@ export class RadiusMcpSdk {
       }
 
       const params = request?.params as { name?: string; arguments?: Record<string, unknown> };
-      const toolName = params?.name || 'unknown_tool';
+      // Extract the actual tool name from potentially prefixed resource names
+      const toolName = extractToolName(params?.name) || 'unknown_tool';
 
       try {
         if (this.config.debug) {
@@ -433,9 +435,8 @@ export class RadiusMcpSdk {
 
     this.validateNonce(message.nonce);
 
-    const resourceToolName = message.resourceName.includes(':')
-      ? message.resourceName.split(':').pop() || message.resourceName
-      : message.resourceName;
+    // Extract tool name from the resource name in the proof (handles prefixed names)
+    const resourceToolName = extractToolName(message.resourceName);
 
     if (resourceToolName !== toolName) {
       if (this.config.debug) {
