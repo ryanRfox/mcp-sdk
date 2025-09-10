@@ -188,7 +188,28 @@ export class RadiusMcpSdk {
           });
         }
 
-        const proof = this.extractProof(request);
+        let proof: EVMAuthProof | null = null;
+        
+        try {
+          proof = this.extractProof(request);
+        } catch (error) {
+          if (this.config.debug) {
+            console.log('[Radius] Auth flow', {
+              step: 'proof_extraction_failed',
+              authFlowId,
+              success: false,
+              error: error instanceof RadiusError ? error.message : 'Unknown error',
+              errorCode: error instanceof RadiusError ? error.code : 'UNKNOWN',
+            });
+          }
+          // If it's a RadiusError with PROOF_MALFORMED, use that code
+          if (error instanceof RadiusError && error.code === 'PROOF_MALFORMED') {
+            return this.errorResponse('PROOF_MALFORMED', tokenIds, toolName);
+          }
+          // Otherwise treat as missing proof
+          return this.errorResponse('PROOF_MISSING', tokenIds, toolName);
+        }
+        
         if (!proof) {
           if (this.config.debug) {
             console.log('[Radius] Auth flow', {
@@ -277,34 +298,111 @@ export class RadiusMcpSdk {
     };
   }
 
+  /**
+   * Type guard to check if an object is an EVMAuthProof
+   */
+  private isEVMAuthProof(obj: unknown): obj is EVMAuthProof {
+    if (!obj || typeof obj !== 'object') return false;
+    
+    const candidate = obj as Record<string, unknown>;
+    
+    // Check top-level structure
+    if (typeof candidate.signature !== 'string') return false;
+    if (!candidate.challenge || typeof candidate.challenge !== 'object') return false;
+    
+    const challenge = candidate.challenge as Record<string, unknown>;
+    
+    // Check challenge structure
+    if (!challenge.domain || typeof challenge.domain !== 'object') return false;
+    if (!challenge.message || typeof challenge.message !== 'object') return false;
+    if (challenge.primaryType !== 'EVMAuthRequest') return false;
+    if (!challenge.types || typeof challenge.types !== 'object') return false;
+    
+    const domain = challenge.domain as Record<string, unknown>;
+    const message = challenge.message as Record<string, unknown>;
+    
+    // Check domain fields
+    if (domain.name !== 'EVMAuth') return false;
+    if (domain.version !== '1') return false;
+    if (typeof domain.chainId !== 'number') return false;
+    if (typeof domain.verifyingContract !== 'string') return false;
+    
+    // Check message fields
+    if (typeof message.serverName !== 'string') return false;
+    if (typeof message.resourceName !== 'string') return false;
+    if (typeof message.requiredTokens !== 'string') return false;
+    if (typeof message.walletAddress !== 'string') return false;
+    if (typeof message.nonce !== 'string') return false;
+    if (typeof message.issuedAt !== 'string') return false;
+    if (typeof message.expiresAt !== 'string') return false;
+    
+    // Validate signature format
+    if (!/^0x[0-9a-f]{130}$/i.test(candidate.signature as string)) return false;
+    
+    return true;
+  }
+
   private extractProof(request: MCPRequest): EVMAuthProof | null {
     const args = request?.params?.arguments;
     if (!args || typeof args !== 'object') return null;
 
-    let auth = (args as Record<string, unknown>).__evmauth;
-    if (!auth) return null;
+    const authParam = (args as Record<string, unknown>).__evmauth;
+    if (!authParam) return null;
+
+    let parsedAuth: unknown = authParam;
+    const MAX_JSON_SIZE = 1024 * 1024; // 1MB limit for JSON strings
 
     // Handle JSON string format (common with web-based MCP clients)
-    if (typeof auth === 'string') {
+    if (typeof authParam === 'string') {
+      // Check size limit before parsing
+      if (authParam.length > MAX_JSON_SIZE) {
+        if (this.config.debug) {
+          console.log('[Radius] JSON string too large', {
+            step: 'proof_extraction',
+            error: 'JSON_TOO_LARGE',
+            size: authParam.length,
+            maxSize: MAX_JSON_SIZE,
+          });
+        }
+        // Return specific error for oversized JSON
+        throw new RadiusError('PROOF_MALFORMED', 'Authentication JSON too large', {
+          size: authParam.length,
+          maxSize: MAX_JSON_SIZE,
+        });
+      }
+
+      // Quick check for JSON-like structure
+      const trimmed = authParam.trim();
+      if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+        if (this.config.debug) {
+          console.log('[Radius] String does not appear to be JSON', {
+            step: 'proof_extraction',
+            inputFormat: 'invalid_string',
+            firstChar: trimmed[0],
+            lastChar: trimmed[trimmed.length - 1],
+          });
+        }
+        return null;
+      }
+
       if (this.config.debug) {
         console.log('[Radius] Processing stringified proof', {
           step: 'proof_extraction',
           inputFormat: 'json_string',
-          stringLength: auth.length,
-          stringPreview: auth.substring(0, 100) + (auth.length > 100 ? '...' : ''),
+          stringLength: authParam.length,
+          stringPreview: authParam.substring(0, 100) + (authParam.length > 100 ? '...' : ''),
         });
       }
 
       try {
-        auth = JSON.parse(auth);
+        parsedAuth = JSON.parse(authParam);
         if (this.config.debug) {
           console.log('[Radius] Successfully parsed stringified proof', {
             step: 'proof_extraction',
             wasStringified: true,
             success: true,
-            resultType: typeof auth,
-            hasChallenge: !!(auth && typeof auth === 'object' && (auth as any).challenge),
-            hasSignature: !!(auth && typeof auth === 'object' && (auth as any).signature),
+            resultType: typeof parsedAuth,
+            hasValidStructure: this.isEVMAuthProof(parsedAuth),
           });
         }
       } catch (error) {
@@ -312,112 +410,61 @@ export class RadiusMcpSdk {
           console.log('[Radius] Failed to parse stringified proof', {
             step: 'proof_extraction',
             inputFormat: 'invalid_json_string',
-            error: (error as Error).message,
-            stringLength: auth.length,
-            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
             troubleshooting: 'Ensure __evmauth is valid JSON when sent as string',
           });
         }
-        return null;
-      }
-    }
-
-    // Handle object format (common with Node.js MCP clients)
-    if (typeof auth === 'object' && auth !== null) {
-      if (this.config.debug) {
-        console.log('[Radius] Processing object proof', {
-          step: 'proof_extraction',
-          inputFormat: 'parsed_object',
-          hasChallenge: !!(auth as any).challenge,
-          hasSignature: !!(auth as any).signature,
+        // Use specific error code for malformed JSON
+        throw new RadiusError('PROOF_MALFORMED', 'Invalid JSON in authentication proof', {
+          parseError: error instanceof Error ? error.message : 'Unknown error',
         });
       }
     } else {
-      if (this.config.debug) {
-        console.log('[Radius] Invalid proof format', {
-          step: 'proof_extraction',
-          inputFormat: typeof auth,
-          expectedFormats: ['object', 'json_string'],
-          troubleshooting: '__evmauth must be either a parsed object or JSON string',
-        });
-      }
-      return null;
+      parsedAuth = authParam;
     }
 
-    // Validate the proof structure
-    if (this.isValidProof(auth)) {
+    // Validate using type guard
+    if (this.isEVMAuthProof(parsedAuth)) {
       if (this.config.debug) {
         console.log('[Radius] Proof validation successful', {
           step: 'proof_validation',
           success: true,
+          inputFormat: typeof authParam === 'string' ? 'json_string' : 'object',
         });
       }
-      return auth as EVMAuthProof;
-    } else {
-      if (this.config.debug) {
-        console.log('[Radius] Proof validation failed', {
-          step: 'proof_validation',
-          success: false,
-          reason: 'Invalid proof structure or missing required fields',
-          troubleshooting: 'Ensure proof has valid challenge and signature fields',
-        });
+      return parsedAuth;
+    }
+
+    // Log detailed validation failure
+    if (this.config.debug) {
+      const debugInfo: Record<string, unknown> = {
+        step: 'proof_validation',
+        success: false,
+        inputFormat: typeof authParam,
+      };
+
+      if (parsedAuth && typeof parsedAuth === 'object') {
+        const probe = parsedAuth as Record<string, unknown>;
+        debugInfo.hasSignature = 'signature' in probe;
+        debugInfo.signatureType = typeof probe.signature;
+        debugInfo.hasChallenge = 'challenge' in probe;
+        debugInfo.challengeType = typeof probe.challenge;
+        
+        if (probe.challenge && typeof probe.challenge === 'object') {
+          const challenge = probe.challenge as Record<string, unknown>;
+          debugInfo.hasDomain = 'domain' in challenge;
+          debugInfo.hasMessage = 'message' in challenge;
+          debugInfo.primaryType = challenge.primaryType;
+        }
       }
+
+      debugInfo.troubleshooting = 'Ensure proof has valid EVMAuth structure with challenge and signature';
+      console.log('[Radius] Proof validation failed', debugInfo);
     }
 
     return null;
   }
 
-  private isValidProof(obj: unknown): boolean {
-    if (!obj || typeof obj !== 'object') return false;
-
-    try {
-      const proof = obj as Record<string, unknown>;
-
-      if (!proof.challenge || typeof proof.challenge !== 'object') return false;
-      if (!proof.signature || typeof proof.signature !== 'string') return false;
-
-      if (!/^0x[0-9a-f]{130}$/i.test(proof.signature)) {
-        return false;
-      }
-
-      const challenge = proof.challenge as Record<string, unknown>;
-
-      if (!challenge.domain || typeof challenge.domain !== 'object') return false;
-      if (!challenge.message || typeof challenge.message !== 'object') return false;
-      if (!challenge.types || typeof challenge.types !== 'object') return false;
-      if (!challenge.primaryType || typeof challenge.primaryType !== 'string') return false;
-
-      const message = challenge.message as Record<string, unknown>;
-
-      const requiredStringFields = [
-        'walletAddress',
-        'nonce',
-        'issuedAt',
-        'expiresAt',
-        'resourceName',
-        'serverName',
-        'requiredTokens',
-      ];
-
-      for (const field of requiredStringFields) {
-        if (typeof message[field] !== 'string') return false;
-      }
-
-      if (!/^0x[0-9a-f]{40}$/i.test(message.walletAddress as string)) {
-        return false;
-      }
-
-      const issuedAt = parseInt(message.issuedAt as string, 10);
-      const expiresAt = parseInt(message.expiresAt as string, 10);
-      if (Number.isNaN(issuedAt) || Number.isNaN(expiresAt)) {
-        return false;
-      }
-
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
   private async verifyProof(
     proof: EVMAuthProof,
@@ -697,6 +744,7 @@ export class RadiusMcpSdk {
       PROOF_MISSING: 'You need to authenticate with Radius MCP Server first',
       PROOF_EXPIRED: 'Your authentication proof has expired. Proofs are valid for 30 seconds.',
       PROOF_INVALID: 'The proof format is invalid',
+      PROOF_MALFORMED: 'The authentication proof contains malformed JSON or invalid structure',
       CHAIN_MISMATCH: 'Wrong blockchain network',
       CONTRACT_MISMATCH: 'Wrong contract address',
       SIGNATURE_INVALID: 'Invalid signature',

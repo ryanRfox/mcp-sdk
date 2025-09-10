@@ -560,11 +560,12 @@ describe('Radius MCP SDK', () => {
         },
       })) as EVMAuthErrorResponse;
 
-      expect(result.content[0].text).toContain('EVMAUTH_PROOF_MISSING');
+      expect(result.content[0].text).toContain('EVMAUTH_SIGNER_MISMATCH');
     });
 
     it('should reject proof missing required fields', async () => {
-      const incompleteProof = {
+      // Create an incomplete proof using unknown type to avoid 'any'
+      const incompleteProof: unknown = {
         challenge: {
           domain: validProof.challenge.domain,
           primaryType: validProof.challenge.primaryType,
@@ -573,7 +574,7 @@ describe('Radius MCP SDK', () => {
             // Missing required fields - only including walletAddress and nonce
             walletAddress: '0x1234567890123456789012345678901234567890',
             nonce: `${Date.now()}-abcdef1234567890abcdef1234567890`,
-          } as any, // Type assertion needed since we're intentionally creating an invalid proof
+          },
         },
         signature: validProof.signature,
       };
@@ -844,7 +845,7 @@ describe('Radius MCP SDK', () => {
 
         expect(handler).not.toHaveBeenCalled();
         const errorResponse = result as EVMAuthErrorResponse;
-        expect(errorResponse.content[0].text).toContain('PROOF_MISSING');
+        expect(errorResponse.content[0].text).toContain('EVMAUTH_PROOF_MALFORMED');
       });
 
       it('should handle malformed JSON gracefully', async () => {
@@ -873,7 +874,11 @@ describe('Radius MCP SDK', () => {
 
           expect(handler).not.toHaveBeenCalled();
           const errorResponse = result as EVMAuthErrorResponse;
-          expect(errorResponse.content[0].text).toContain('PROOF_MISSING');
+          // Different malformed strings produce different errors
+          const text = errorResponse.content[0].text;
+          expect(
+            text.includes('EVMAUTH_PROOF_MALFORMED') || text.includes('EVMAUTH_PROOF_MISSING')
+          ).toBe(true);
         }
       });
     });
@@ -1010,16 +1015,91 @@ describe('Radius MCP SDK', () => {
           }
         });
 
-        // Should log object processing
+        // Should log successful validation with object format
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.stringContaining('[Radius] Processing object proof'),
+          expect.stringContaining('[Radius] Proof validation successful'),
           expect.objectContaining({
-            step: 'proof_extraction',
-            inputFormat: 'parsed_object',
+            step: 'proof_validation',
+            success: true,
+            inputFormat: 'object',
           })
         );
 
         consoleSpy.mockRestore();
+      });
+    });
+
+    describe('Edge Cases', () => {
+      it('should reject oversized JSON strings', async () => {
+        const handler = vi.fn();
+        const protectedHandler = sdk.protect(101, handler);
+
+        // Create a large JSON string (over 1MB)
+        const largeData = 'x'.repeat(1024 * 1024);
+        const oversizedJson = JSON.stringify({
+          ...validProof,
+          extraData: largeData,
+        });
+
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { 
+              __evmauth: oversizedJson,
+              data: 'test' 
+            }
+          }
+        });
+
+        expect(handler).not.toHaveBeenCalled();
+        const errorResponse = result as EVMAuthErrorResponse;
+        expect(errorResponse.content[0].text).toContain('EVMAUTH_PROOF_MALFORMED');
+      });
+
+      it('should handle null and undefined in proof fields', async () => {
+        const handler = vi.fn();
+        const protectedHandler = sdk.protect(101, handler);
+
+        const proofWithNulls: unknown = {
+          challenge: {
+            domain: null,
+            message: undefined,
+          },
+          signature: null,
+        };
+
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { 
+              __evmauth: proofWithNulls,
+              data: 'test' 
+            }
+          }
+        });
+
+        expect(handler).not.toHaveBeenCalled();
+        const errorResponse = result as EVMAuthErrorResponse;
+        expect(errorResponse.content[0].text).toContain('EVMAUTH_PROOF_MISSING');
+      });
+
+      it('should reject JSON with incorrect brace types', async () => {
+        const handler = vi.fn();
+        const protectedHandler = sdk.protect(101, handler);
+
+        const result = await protectedHandler({
+          params: {
+            name: 'test_tool',
+            arguments: { 
+              __evmauth: '[1,2,3]', // Array instead of object
+              data: 'test' 
+            }
+          }
+        });
+
+        expect(handler).not.toHaveBeenCalled();
+        const errorResponse = result as EVMAuthErrorResponse;
+        expect(errorResponse.content[0].text).toContain('EVMAUTH_PROOF_MISSING');
       });
     });
   });
